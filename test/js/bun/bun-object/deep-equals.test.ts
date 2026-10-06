@@ -271,6 +271,108 @@ describe("Set and Map entries without an identical counterpart", () => {
     });
   });
 
+  // node's strict entry points pair every such entry with a right entry of its own (setObjectEquiv / mapObjectEquiv in lib/internal/util/comparisons.js).
+  const nodeStrict = Object.entries(nodeEntryPoints).filter(([name]) => name !== "assert.deepEqual");
+
+  describe.each(nodeStrict)("%s", (_, check) => {
+    it.each(unequalCounts)("%s", (_, a, b) => {
+      check(a, b, false);
+      check(b, a, false);
+    });
+  });
+
+  // node probes the first and then the last open entry, so the same order and the reversed order cost about one comparison per entry.
+  it.each(nodeStrict)("%s: reads each entry a bounded number of times", (_, check) => {
+    const over: string[] = [];
+    let reads = 0;
+    const entry = (id: number) => ({
+      get id() {
+        reads++;
+        return id;
+      },
+    });
+    const kinds = {
+      Set: (ids: number[]) => new Set(ids.map(entry)),
+      Map: (ids: number[]) => new Map(ids.map(id => [entry(id), id])),
+    };
+    for (const [kind, make] of Object.entries(kinds)) {
+      for (const n of [64, 128]) {
+        const ids = Array.from({ length: n }, (_, i) => i);
+        for (const [order, rightIds] of [
+          ["same order", ids],
+          ["reversed", ids.toReversed()],
+        ] as const) {
+          const a = make(ids);
+          const b = make(rightIds);
+          reads = 0;
+          check(a, b, true);
+          if (reads > 8 * n) over.push(`${kind}, ${order}, n=${n}: ${reads} reads`);
+        }
+      }
+    }
+    expect(over).toEqual([]);
+  });
+
+  // The pairing works on a copy of the right entries, as in node.
+  describe("a getter that changes the right side during the pairing", () => {
+    function emptiedMidway() {
+      const right = new Set<unknown>();
+      const emptiesRight = {
+        get id() {
+          right.clear();
+          Bun.gc(true);
+          return 0;
+        },
+      };
+      const left = set(emptiesRight, { id: 1 }, { id: 2 });
+      for (const id of [0, 1, 2]) right.add({ id });
+      return [left, right];
+    }
+    function grownMidway() {
+      const right = new Set<unknown>();
+      let grown = false;
+      const growsRight = {
+        get id() {
+          if (!grown) right.add({ id: 3 });
+          grown = true;
+          return 0;
+        },
+      };
+      const left = set(growsRight, { id: 1 }, { id: 2 });
+      for (const id of [0, 1, 2]) right.add({ id });
+      return [left, right];
+    }
+    // The getter runs in the left walk, before the right entries are copied. Then fewer entries are left to pair with.
+    function keyRemovedInLeftWalk() {
+      const right = new Map<unknown, unknown>();
+      const removesKey = {
+        get v() {
+          right.delete(key);
+          return 1;
+        },
+      };
+      const key = { k: 2 };
+      const left = map([{ k: 1 }, 1], ["held", removesKey], [key, 2]);
+      right.set({ k: 1 }, 1).set("held", { v: 1 }).set(key, 2);
+      return [left, right];
+    }
+
+    it.each(nodeStrict)("%s", (_, check) => {
+      check(...emptiedMidway(), true);
+      check(...grownMidway(), true);
+      check(...keyRemovedInLeftWalk(), false);
+    });
+  });
+
+  // To node, a function equals only itself.
+  it.each(nodeStrict)("%s: callable entries pair only by identity", (_, check) => {
+    const callable = () => new Proxy(function () {}, {});
+    const shared = callable();
+    check(set(callable(), { a: 1 }, { a: 2 }), set(callable(), { a: 2 }, { a: 1 }), false);
+    check(set(shared, { a: 1 }, { a: 2 }), set(shared, { a: 2 }, { a: 1 }), true);
+    check(map([callable(), 1], [{ a: 1 }, 2]), map([callable(), 1], [{ a: 1 }, 2]), false);
+  });
+
   // {} equals both other members, which do not equal each other. Pairing members one-to-one would make the answer depend on the order.
   it.each(["Bun.deepEquals", "expect().toEqual"])(
     "%s: the insertion order of either side does not change the answer",
