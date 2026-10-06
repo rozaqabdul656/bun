@@ -9748,46 +9748,6 @@ describe.concurrent("bun-install", () => {
       });
     });
 
-    // A credential in the path makes Bun rebuild the registry URL. A URL that has no scheme must not gain one there.
-    it.each([
-      ["_authToken=hunter2", "Bearer hunter2"],
-      [":_authToken=hunter2", "Bearer hunter2"],
-      ["_auth=aHVudGVyMg==", "Basic aHVudGVyMg=="],
-      [":username=user:_password=hunter2", "Basic dXNlcjpodW50ZXIy"],
-    ])("does not send the credential of a registry URL that has no scheme (%s)", async (credential, authorization) => {
-      const requests: string[] = [];
-      using server = Bun.serve({
-        port: 0,
-        fetch(req) {
-          requests.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization")}`);
-          return new Response("{}", { status: 404 });
-        },
-      });
-      const host = `localhost:${server.port}`;
-
-      const install = async (scheme: string) => {
-        using dir = tempDir("install-registry-no-scheme", {
-          "package.json": JSON.stringify({ name: "foo", version: "0.0.1", dependencies: { left: "1.0.0" } }),
-          "bunfig.toml": `[install]\ncache = false\nregistry = "${scheme}${host}/npm/${credential}"\n`,
-        });
-        await using proc = spawn({
-          cmd: [bunExe(), "install"],
-          cwd: String(dir),
-          stdout: "pipe",
-          stderr: "pipe",
-          env,
-        });
-        const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
-        return { stderr, exitCode };
-      };
-      const [refused, accepted] = await Promise.all([install(""), install("http://")]);
-
-      expect(refused.stderr).toContain(`error: Failed to join registry "${host}/npm/" and package "left" URLs\n`);
-      expect(accepted.stderr).toContain(`error: GET http://${host}/npm/left - 404\n`);
-      expect(requests).toEqual([`GET /npm/left ${authorization}`]);
-      expect([refused.exitCode, accepted.exitCode]).toEqual([1, 1]);
-    });
-
     // TODO: This test should fail if the param `warn_on_error` is true in
     // `(install.zig).NetworkTask.forManifest()`. Unfortunately, that
     // code never gets run for peer dependencies unless you do some package

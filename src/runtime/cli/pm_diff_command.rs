@@ -920,12 +920,10 @@ fn registry_get(
                 }
                 // `dist.tarball` comes from the registry, not from the registry URL.
                 (http::Error::UnsupportedProtocol, RegistryGet::Tarball { name }) => {
-                    Output::err_generic(
-                        "Expected tarball URL to start with https:// or http://, but the one for package {} {}",
-                        (
-                            bun_fmt::quote(name),
-                            npm::registry::NotHttp::of(&display_url),
-                        ),
+                    npm::registry::report_unsupported_protocol(
+                        "Tarball",
+                        format_args!("package {}", bun_fmt::quote(name)),
+                        &display_url,
                     )
                 }
                 _ => Output::err(err, "GET {} failed", (BStr::new(&display_url),)),

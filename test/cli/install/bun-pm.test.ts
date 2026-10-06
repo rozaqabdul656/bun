@@ -927,7 +927,7 @@ async function whoamiWith(bunfig: (port: number) => string, cmd = ["pm", "whoami
   using server = Bun.serve({
     port: 0,
     fetch(req) {
-      requests.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization")}`);
+      requests.push(`${req.method} ${URL.parse(req.url)?.pathname ?? req.url} ${req.headers.get("authorization")}`);
       return Response.json({ username: "from-registry" });
     },
   });
@@ -951,7 +951,7 @@ const whoamiRefused = (problem: string) =>
 test.concurrent.each([
   ["pm whoami", "htps://user:hunter2@localhost:PORT/", 'starts with "htps://"'],
   ["whoami", "htps://localhost:PORT/", 'starts with "htps://"'],
-  ["pm whoami", "localhost:PORT/npm/", "does not start with a scheme"],
+  ["pm whoami", "localhost:PORT/npm/", 'does not start with "http://" or "https://"'],
 ])("bun %s refuses the registry url %s before any request", async (cmd, url, problem) => {
   const { stdout, stderr, requests, exitCode } = await whoamiWith(
     port => `[install]\nregistry = { url = "${url.replace("PORT", String(port))}", token = "secret-token" }\n`,

@@ -608,7 +608,7 @@ describe("`bun audit`", () => {
       using server = Bun.serve({
         port: 0,
         fetch(req) {
-          requests.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization")}`);
+          requests.push(`${req.method} ${URL.parse(req.url)?.pathname ?? req.url} ${req.headers.get("authorization")}`);
           return Response.json({});
         },
       });
@@ -637,37 +637,47 @@ describe("`bun audit`", () => {
     }
     const registry = (url: string) => `{ url = "${url}", token = "secret-token" }`;
 
-    // The default registry is required, so the command stops.
+    const refused = (registry: string, problem: string) =>
+      `error: Registry URL must be http:// or https://\nnote: the URL for ${registry} ${problem}\n`;
+
     test.each([
-      ["audit", "htps://user:hunter2@localhost:PORT/", 'starts with "htps://"'],
-      ["audit --json", "htps://localhost:PORT/", 'starts with "htps://"'],
-      ["audit fix", "localhost:PORT/npm/", "does not start with a scheme"],
+      ["audit", registry("htps://user:hunter2@localhost:PORT/"), 'starts with "htps://"'],
+      ["audit --json", registry("htps://localhost:PORT/"), 'starts with "htps://"'],
+      ["audit fix", registry("localhost:PORT/npm/"), 'does not start with "http://" or "https://"'],
+      // With no credential the request still carries the dependency list, and its answer is the audit result.
+      ["audit", '"htps://localhost:PORT/"', 'starts with "htps://"'],
     ])("bun %s refuses the default registry %s before any request", async (cmd, url, problem) => {
       const { stdout, stderr, requests, exitCode } = await auditWith(
-        `[install]\nregistry = ${registry(url)}\n`,
+        `[install]\nregistry = ${url}\n`,
         cmd.split(" ").slice(1),
       );
-      expect(stdout).not.toContain("hunter2");
+      // Neither the password nor an audit result is printed.
+      expect(stdout).not.toMatch(/hunter2|vulnerabilit/);
       expect({ stderr, requests, exitCode }).toEqual({
-        stderr: `error: Registry URL must be http:// or https://\nnote: the URL for the default registry ${problem}\n`,
+        stderr: refused("the default registry", problem),
         requests: [],
         exitCode: 1,
       });
     });
 
-    // A scoped registry that cannot be asked is skipped with a warning, as for every other send error.
+    // No retry makes the URL http(s), so a scoped registry is not skipped with a warning as for other send errors.
     test.each([
-      ["htps://localhost:PORT/", 'starts with "htps://"'],
-      ["user:hunter2@localhost:PORT/", "does not start with a scheme"],
-    ])("a scoped registry %s is skipped, not asked", async (url, problem) => {
+      ["audit", "htps://localhost:PORT/", 'starts with "htps://"'],
+      ["audit --json", "htps://localhost:PORT/", 'starts with "htps://"'],
+      ["audit --silent", "htps://localhost:PORT/", 'starts with "htps://"'],
+      ["audit fix --json", "htps://localhost:PORT/", 'starts with "htps://"'],
+      ["audit", "user:hunter2@localhost:PORT/", 'does not start with "http://" or "https://"'],
+    ])("bun %s refuses the scoped registry %s", async (cmd, url, problem) => {
       const { stdout, stderr, requests, exitCode } = await auditWith(
         `[install]\nregistry = "http://localhost:PORT/"\n[install.scopes]\nfoo = ${registry(url)}\n`,
+        cmd.split(" ").slice(1),
       );
-      expect(stdout).toContain("(checked 1 package, 1 skipped)");
+      expect(stdout).not.toMatch(/hunter2|vulnerabilit/);
       expect({ stderr, requests, exitCode }).toEqual({
-        stderr: `warn: a registry whose URL ${problem} did not answer the audit request (registry URL must be http:// or https://); skipped @foo/bar\n`,
+        stderr: refused('the "@foo" registry', problem),
+        // The default registry is asked first. It has no token.
         requests: [`POST ${bulk} null`],
-        exitCode: 0,
+        exitCode: 1,
       });
     });
   });

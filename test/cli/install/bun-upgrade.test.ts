@@ -393,7 +393,7 @@ it("does not fetch a release archive whose URL is not http:// or https://", asyn
   using plain = Bun.serve({
     port: 0,
     fetch(req) {
-      requests.push(new URL(req.url).pathname.split("/")[1]);
+      requests.push((URL.parse(req.url)?.pathname ?? req.url).split("/")[1]);
       return new Response("this is not a real zip archive");
     },
   });

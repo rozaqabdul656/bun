@@ -980,7 +980,7 @@ describe.concurrent("credentials in the registry url", () => {
           env: { BUN_CONFIG_TOKEN: token },
         },
         theDefault,
-        "does not start with a scheme",
+        'does not start with "http://" or "https://"',
         true,
       ],
       // `--tolerate-republish` asks the registry first, also with `--dry-run`.
@@ -1025,11 +1025,12 @@ describe.concurrent("credentials in the registry url", () => {
     });
 
     test("does not change a publish that sends no refused request", async () => {
-      const [typo, upperCase, dryRun, noCredentials] = await Promise.all(
+      const [typo, upperCase, dryRun, noHostDryRun, noCredentials] = await Promise.all(
         [
           { files: port => bunfig(`htps://localhost:${port}/`) },
           { files: port => bunfig(`HTTP://localhost:${port}/`) },
           { files: port => bunfig(`htps://localhost:${port}/`), args: () => ["--dry-run"] },
+          { files: () => bunfig("https://"), args: () => ["--dry-run"] },
           { files: port => ({ "bunfig.toml": `[install]\nregistry = "htps://localhost:${port}/"\n` }) },
         ].map(run),
       );
@@ -1040,13 +1041,14 @@ describe.concurrent("credentials in the registry url", () => {
         registry: `http://localhost:${upperCase.port}/`,
         exitCode: 0,
       });
-      // `--dry-run` sends nothing, so it has nothing to refuse.
+      // `--dry-run` sends nothing, so it has nothing to refuse. Its summary says the same as the error.
       expect(dryRun).toMatchObject({
         err: "",
         requests: [],
         registry: 'a URL that starts with "htps://"',
         exitCode: 0,
       });
+      expect(noHostDryRun).toMatchObject({ err: "", requests: [], registry: "a URL that has no host", exitCode: 0 });
       expect(noCredentials).toMatchObject({
         err: "error: missing authentication (run `bunx npm login`)\n",
         requests: [],

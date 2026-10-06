@@ -483,7 +483,7 @@ diffme@1.0.0 → diffme@2.0.0
       using server = Bun.serve({
         port: 0,
         fetch(req) {
-          requests.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization")}`);
+          requests.push(`${req.method} ${URL.parse(req.url)?.pathname ?? req.url} ${req.headers.get("authorization")}`);
           if (!tarball) return new Response("{}", { status: 404 });
           const version = (v: string) => ({ name: pkg, version: v, dist: { tarball: tarball(server.port, v) } });
           return Response.json({
@@ -519,7 +519,7 @@ diffme@1.0.0 → diffme@2.0.0
         "@corp/diffme",
         "[install.scopes]\ncorp = ",
         "localhost:PORT/npm/",
-        'the "@corp" registry does not start with a scheme',
+        'the "@corp" registry does not start with "http://" or "https://"',
       ],
     ])("the %s is refused before any request", async (_, pkg, section, url, problem) => {
       const { stdout, stderr, requests, exitCode } = await diffWith({
@@ -534,15 +534,18 @@ diffme@1.0.0 → diffme@2.0.0
       });
     });
 
-    test("a dist.tarball is not fetched", async () => {
-      // The registry is fine, so the manifest request goes out with the token. The tarball it names is refused.
+    // The registry is fine, so the manifest request goes out with the token. The tarball it names is refused.
+    test.each([
+      ["ftp://user:hunter2@localhost:PORT/", 'starts with "ftp://"'],
+      ["https:/localhost:PORT/", 'does not start with "http://" or "https://"'],
+    ])("a dist.tarball at %s is not fetched", async (origin, problem) => {
       const { stdout, stderr, requests, exitCode } = await diffWith({
         bunfig: port => `[install]\nregistry = ${registry(`http://localhost:${port}/`)}\n`,
-        tarball: (port, version) => `ftp://user:hunter2@localhost:${port}/diffme-${version}.tgz`,
+        tarball: (port, version) => `${origin.replace("PORT", String(port))}diffme-${version}.tgz`,
       });
       expect({ stdout, stderr, requests, exitCode }).toEqual({
         stdout: "",
-        stderr: `error: Expected tarball URL to start with https:// or http://, but the one for package "diffme" starts with "ftp://"\n`,
+        stderr: `error: Tarball URL must be http:// or https://\nnote: the URL for package "diffme" ${problem}\n`,
         requests: [`GET /diffme Bearer ${token}`],
         exitCode: 1,
       });

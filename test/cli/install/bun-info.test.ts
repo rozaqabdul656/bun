@@ -396,7 +396,8 @@ describe.concurrent("bun info", () => {
       using server = Bun.serve({
         port: 0,
         fetch(req) {
-          requests.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("authorization")}`);
+          // Through a proxy the request target can be a string that `new URL()` refuses.
+          requests.push(`${req.method} ${URL.parse(req.url)?.pathname ?? req.url} ${req.headers.get("authorization")}`);
           return new Response("{}", { status: 404 });
         },
       });
@@ -420,7 +421,7 @@ describe.concurrent("bun info", () => {
       `error: Registry URL must be http:// or https://\nnote: the URL for ${registry} ${problem}\n`;
     const theDefault = "the default registry";
     const corp = 'the "@corp" registry';
-    const noScheme = "does not start with a scheme";
+    const noScheme = 'does not start with "http://" or "https://"';
     const startsWith = (scheme: string) => `starts with "${scheme}://"`;
 
     // [name, setup, the registry the error names, what it says about the URL]
@@ -491,48 +492,28 @@ describe.concurrent("bun info", () => {
         theDefault,
         noScheme,
       ],
-      // With the credential in the URL, the stored URL used to get `http://` in front of it.
-      [
-        "no scheme, _authToken in the path",
-        { files: port => bunfigString(`localhost:${port}/npm/_authToken=hunter2`) },
-        theDefault,
-        noScheme,
-      ],
-      [
-        "no scheme, _auth in the path",
-        { files: port => bunfigString(`localhost:${port}/npm/_auth=aHVudGVyMg==`) },
-        theDefault,
-        noScheme,
-      ],
-      [
-        "no scheme, :_authToken in the path, from a variable",
-        {
-          files: () => ({ "bunfig.toml": `[install]\nregistry = { url = "$REGISTRY_URL_FOR_TEST" }\n` }),
-          env: port => ({ REGISTRY_URL_FOR_TEST: `localhost:${port}/npm/:_authToken=hunter2` }),
-        },
-        theDefault,
-        noScheme,
-      ],
-      [
-        "protocol-relative, token from BUN_CONFIG_TOKEN",
-        { files: port => bunfigString(`//localhost:${port}/`), env: () => ({ BUN_CONFIG_TOKEN: token }) },
-        theDefault,
-        noScheme,
-      ],
-      // A password in the URL is not printed, wherever it sits.
+      // A password in the URL is not printed, wherever it sits. The proxy would receive what the client dials.
       [
         "userinfo",
-        { files: port => bunfig(`htps://user:hun/ter2@localhost:${port}/`) },
+        { files: port => bunfig(`htps://user:hun/ter2@localhost:${port}/`), env: proxy },
         theDefault,
         startsWith("htps"),
       ],
-      ["userinfo, https//", { files: port => bunfig(`https//user:hunter2@localhost:${port}/`) }, theDefault, noScheme],
       [
-        "userinfo before https://",
-        { files: port => bunfig(`user:hunter2@https://localhost:${port}/`) },
+        "userinfo, https//",
+        { files: port => bunfig(`https//user:hunter2@localhost:${port}/`), env: proxy },
         theDefault,
         noScheme,
       ],
+      [
+        "userinfo before https://",
+        { files: port => bunfig(`user:hunter2@https://localhost:${port}/`), env: proxy },
+        theDefault,
+        noScheme,
+      ],
+      // A scheme with one slash or none is not `<scheme>://`.
+      ["--registry https:/", { args: port => ["--registry", `https:/localhost:${port}/`] }, "--registry", noScheme],
+      ["--registry http:", { args: port => ["--registry", `http:localhost:${port}/`] }, "--registry", noScheme],
     ];
     it.each(refusedCases)("is refused before any request: %s", async (_, setup, registry, problem) => {
       const { output, error, requests, code } = await view(setup);

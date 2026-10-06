@@ -403,7 +403,6 @@ struct PackageVersions {
 enum SkipReason {
     Status(u32),
     Send(&'static str),
-    UnsupportedProtocol,
     NotJson,
 }
 
@@ -412,9 +411,6 @@ impl core::fmt::Display for SkipReason {
         match self {
             SkipReason::Status(status) => write!(f, "{status}"),
             SkipReason::Send(name) => f.write_str(name),
-            SkipReason::UnsupportedProtocol => {
-                f.write_str("registry URL must be http:// or https://")
-            }
             SkipReason::NotJson => f.write_str("non-JSON response"),
         }
     }
@@ -423,20 +419,7 @@ impl core::fmt::Display for SkipReason {
 fn unaudited(request: &AuditRequest, reason: &SkipReason) -> audit_fix::UnauditedRegistry {
     let mut reason_text: Vec<u8> = Vec::new();
     write!(&mut reason_text, "{reason}").expect("unreachable");
-    let url = URL::parse(&request.registry.href);
-    let registry: Box<[u8]> = if url.has_http_like_protocol() {
-        url.href_without_auth()
-    } else {
-        // No text of a URL that is not http(s): a password in it can sit where no parser finds it.
-        let mut described: Vec<u8> = Vec::new();
-        write!(
-            &mut described,
-            "a registry whose URL {}",
-            bun_install::npm::registry::NotHttp::of(&request.registry.href)
-        )
-        .expect("unreachable");
-        described.into_boxed_slice()
-    };
+    let registry = URL::parse(&request.registry.href).href_without_auth();
     audit_fix::UnauditedRegistry {
         registry: Box::from(strings::without_trailing_slash(&registry)),
         packages: request
@@ -609,7 +592,7 @@ fn send_audit_requests(
     let mut stats = AuditStats::default();
 
     for request in &collected.requests {
-        match send_audit_request(pm, &request.registry, &request.body, echo_non_json)? {
+        match send_audit_request(pm, request, echo_non_json)? {
             Ok(body) => {
                 stats.checked += request.packages.len();
                 bodies.push(body);
@@ -707,10 +690,14 @@ fn merge_bulk_bodies(bodies: &[Box<[u8]>]) -> Box<[u8]> {
 
 fn send_audit_request(
     pm: &mut PackageManager,
-    registry: &AuditRegistry,
-    body: &[u8],
+    request: &AuditRequest,
     echo_non_json: bool,
 ) -> Result<Result<Box<[u8]>, SkipReason>, bun_alloc::AllocError> {
+    let AuditRequest {
+        registry,
+        packages,
+        body,
+    } = request;
     libdeflate::load();
     let mut compressor = libdeflate::OwnedCompressor::new(6).ok_or(bun_alloc::AllocError)?;
 
@@ -781,7 +768,15 @@ fn send_audit_request(
             }
             SkipReason::NotJson
         }
-        Err(http::Error::UnsupportedProtocol) => SkipReason::UnsupportedProtocol,
+        // No retry makes this URL http(s), so a scoped registry is not skipped for it.
+        Err(http::Error::UnsupportedProtocol) => {
+            let scope = match packages.first() {
+                Some(package) if !registry.is_default => pm.scope_for_package_name(&package.name),
+                _ => &pm.options.scope,
+            };
+            scope.report_unsupported_protocol();
+            Global::exit(1);
+        }
         Err(err) => SkipReason::Send(err.name()),
     };
 
@@ -797,7 +792,6 @@ fn send_audit_request(
             }
             report_non_json_response(&registry.href);
         }
-        SkipReason::UnsupportedProtocol => pm.options.scope.report_unsupported_protocol(),
         reason => {
             bun_core::pretty_errorln!(
                 "<r><red>error<r><d>:<r> <red><b>POST<r><red> {}<d> - {}<r>",

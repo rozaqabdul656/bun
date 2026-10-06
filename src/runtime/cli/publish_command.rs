@@ -883,18 +883,12 @@ impl PublishCommand {
                 "default"
             },
         );
-        if registry_url.has_http_like_protocol() {
-            let registry_href = registry_url.href_without_auth();
-            bun_core::pretty!(
+        match registry.printable_href() {
+            Ok(registry_href) => bun_core::pretty!(
                 "{}/\n",
                 bstr::BStr::new(strings::without_trailing_slash(&registry_href)),
-            );
-        } else {
-            // No text of a URL that is not http(s): a password in it can sit where no parser finds it.
-            bun_core::pretty!(
-                "a URL that {}\n",
-                Npm::Registry::NotHttp::of(registry_url.href),
-            );
+            ),
+            Err(problem) => bun_core::pretty!("a URL that {}\n", problem),
         }
 
         // dry-run stops here

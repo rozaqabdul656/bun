@@ -323,23 +323,20 @@ pub mod registry {
 
     /// What an error says about a URL that is not http(s): no text of it but its scheme.
     pub enum NotHttp<'a> {
-        Scheme(&'a [u8]),
-        NoScheme,
+        OtherScheme(&'a [u8]),
+        /// No `<scheme>://` in front.
+        NoSchemePrefix,
+        /// `http://` or `https://` and no host behind it.
         NoHost,
     }
 
     impl<'a> NotHttp<'a> {
         pub fn of(href: &'a [u8]) -> NotHttp<'a> {
-            // `https://` alone: the commands cut its slashes before they append a path, and the result is not an http(s) URL.
-            let scheme_only = strings::without_trailing_slash(href);
-            if scheme_only.eq_ignore_ascii_case(b"http:")
-                || scheme_only.eq_ignore_ascii_case(b"https:")
-            {
-                return NotHttp::NoHost;
-            }
-            match URL::parse(href).scheme() {
-                Some(scheme) => NotHttp::Scheme(scheme),
-                None => NotHttp::NoScheme,
+            let url = URL::parse(href);
+            match url.scheme() {
+                Some(_) if url.has_http_like_protocol() && url.host.is_empty() => NotHttp::NoHost,
+                Some(scheme) => NotHttp::OtherScheme(scheme),
+                None => NotHttp::NoSchemePrefix,
             }
         }
     }
@@ -347,19 +344,21 @@ pub mod registry {
     impl core::fmt::Display for NotHttp<'_> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             match self {
-                NotHttp::Scheme(scheme) => {
+                NotHttp::OtherScheme(scheme) => {
                     write!(f, "starts with \"{}://\"", bstr::BStr::new(scheme))
                 }
-                NotHttp::NoScheme => f.write_str("does not start with a scheme"),
+                NotHttp::NoSchemePrefix => {
+                    f.write_str("does not start with \"http://\" or \"https://\"")
+                }
                 NotHttp::NoHost => f.write_str("has no host"),
             }
         }
     }
 
-    /// Reports that `href`, the URL for `registry`, is not http(s).
-    pub fn report_unsupported_protocol(registry: core::fmt::Arguments<'_>, href: &[u8]) {
-        Output::err_generic("Registry URL must be http:// or https://", ());
-        bun_core::note!("the URL for {} {}", registry, NotHttp::of(href));
+    /// Reports that `href`, the URL for `what`, is not http(s). `kind` is the kind of URL: "Registry" or "Tarball".
+    pub fn report_unsupported_protocol(kind: &str, what: core::fmt::Arguments<'_>, href: &[u8]) {
+        Output::err_generic("{} URL must be http:// or https://", (kind,));
+        bun_core::note!("the URL for {} {}", what, NotHttp::of(href));
     }
 
     impl Scope {
@@ -371,14 +370,28 @@ pub mod registry {
         pub fn report_unsupported_protocol(&self) {
             if self.name.is_empty() {
                 return report_unsupported_protocol(
+                    "Registry",
                     format_args!("the default registry"),
                     self.url.href(),
                 );
             }
             report_unsupported_protocol(
+                "Registry",
                 format_args!("the \"@{}\" registry", bstr::BStr::new(&self.name)),
                 self.url.href(),
             );
+        }
+
+        /// The URL without credentials, for a message. `Err` when `AsyncHTTP::send_sync` refuses the requests to
+        /// this registry: a password in such a URL can sit where no parser finds it, so no text of it is printed.
+        pub fn printable_href(&self) -> Result<Box<[u8]>, NotHttp<'_>> {
+            let href = self.url.href();
+            // Every request URL is this prefix and a path.
+            if URL::parse(strings::without_trailing_slash(href)).has_http_like_protocol() {
+                Ok(self.url.url().href_without_auth())
+            } else {
+                Err(NotHttp::of(href))
+            }
         }
 
         /// Stores the WHATWG serialization (the base `bun_url::join` resolves against) so same-origin checks, concatenated tarball URLs and `url_hash` agree with the requests; credentials must already be split off.
